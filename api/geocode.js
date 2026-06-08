@@ -1,7 +1,6 @@
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
 
-  // Autenticação por API Key (problema 2 resolvido aqui)
   const apiKey = req.headers['x-api-key'];
   if (apiKey !== process.env.INTERNAL_API_KEY) {
     return res.status(401).json({ error: 'Não autorizado' });
@@ -22,6 +21,29 @@ export default async function handler(req, res) {
     }
 
     const { lat, lng } = data.results[0].geometry.location;
+    const enderecoConfirmado = data.results[0].formatted_address;
+
+    // --- Comparação de endereços ---
+    const normalizar = (str) =>
+      str
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '') // remove acentos
+        .replace(/[^a-z0-9\s]/g, '')     // remove pontuação
+        .split(/\s+/)
+        .filter(w => w.length > 2);      // ignora palavras curtas (de, da, sp...)
+
+    const wordsInput = normalizar(address);
+    const wordsOutput = normalizar(enderecoConfirmado);
+
+    const matches = wordsInput.filter(w => wordsOutput.includes(w));
+    const score = matches.length / wordsInput.length;
+
+    let matchStatus;
+    if (score >= 0.6) matchStatus = 'ok';
+    else if (score >= 0.3) matchStatus = 'incerto';
+    else matchStatus = 'divergente';
+    // ---------------------------------
 
     const toGMS = (decimal) => {
       const abs = Math.abs(decimal);
@@ -39,13 +61,16 @@ export default async function handler(req, res) {
     const lngDirW = lng < 0 ? 'W' : 'E';
 
     return res.status(200).json({
+      match_status: matchStatus,
+      match_score: Math.round(score * 100) + '%',
+      endereco_solicitado: address,
+      endereco_confirmado: enderecoConfirmado,
       latitude_decimal: lat,
       longitude_decimal: lng,
       latitude_cpfl: `${latDir} ${latGMS.degrees} ${latGMS.minutes} ${latGMS.seconds}`,
       longitude_cpfl: `${lngDir} ${lngGMS.degrees} ${lngGMS.minutes} ${lngGMS.seconds}`,
       latitude_sirgas: `${latGMS.degrees}º ${latGMS.minutes}'' ${parseFloat(latGMS.seconds).toFixed(1)}' ${latDir}`,
       longitude_sirgas: `${lngGMS.degrees}º ${lngGMS.minutes}'' ${parseFloat(lngGMS.seconds).toFixed(1)}' ${lngDirW}`,
-      endereco_confirmado: data.results[0].formatted_address
     });
 
   } catch (error) {
