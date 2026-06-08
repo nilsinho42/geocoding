@@ -126,7 +126,7 @@ export default async function handler(req, res) {
     }
 
     const numero = extrairNumero(address);
-    const enderecoCorrigido = `${viaCepData.logradouro}, ${numero}, ${viaCepData.localidade}, ${viaCepData.uf}`;
+    const enderecoCorrigido = `${viaCepData.logradouro}, ${numero}, ${cepLimpo}, ${viaCepData.localidade}, ${viaCepData.uf}`;
 
     const resultado2 = await geocodificar(enderecoCorrigido);
 
