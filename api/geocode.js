@@ -1,19 +1,24 @@
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
 
-  const { address } = req.query;
+  // Autenticação por API Key (problema 2 resolvido aqui)
+  const apiKey = req.headers['x-api-key'];
+  if (apiKey !== process.env.INTERNAL_API_KEY) {
+    return res.status(401).json({ error: 'Não autorizado' });
+  }
 
+  const { address } = req.query;
   if (!address) {
     return res.status(400).json({ error: 'Endereço obrigatório' });
   }
 
   try {
-    const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${process.env.GOOGLE_MAPS_API_KEY}`;
+    const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&region=br&language=pt-BR&key=${process.env.GOOGLE_MAPS_API_KEY}`;
     const response = await fetch(url);
     const data = await response.json();
 
     if (data.status !== 'OK') {
-      return res.status(404).json({ error: 'Endereço não encontrado' });
+      return res.status(404).json({ error: 'Endereço não encontrado', status: data.status });
     }
 
     const { lat, lng } = data.results[0].geometry.location;
