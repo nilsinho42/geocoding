@@ -11,6 +11,8 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Endereço obrigatório' });
   }
 
+  // --- Utilitários ---
+
   const normalizar = (str) =>
     str
       .toLowerCase()
@@ -24,7 +26,7 @@ export default async function handler(req, res) {
     const wordsInput = normalizar(input);
     const wordsOutput = normalizar(output);
     const matches = wordsInput.filter(w => wordsOutput.includes(w));
-    const score = matches.length / wordsInput.length;
+    const score = wordsInput.length > 0 ? matches.length / wordsInput.length : 0;
     let matchStatus;
     if (score >= 0.6) matchStatus = 'ok';
     else if (score >= 0.3) matchStatus = 'incerto';
@@ -72,90 +74,86 @@ export default async function handler(req, res) {
     return match ? match[1] : null;
   };
 
+  const montarResposta = (tentativa, matchStatus, score, enderecoSolicitado, enderecoConfirmado, lat, lng, extra = {}) => ({
+    tentativa,
+    match_status: matchStatus,
+    match_score: Math.round(score * 100) + '%',
+    endereco_solicitado: enderecoSolicitado,
+    endereco_confirmado: enderecoConfirmado,
+    ...extra,
+    ...(matchStatus === 'divergente' ? { aviso: 'Revisão manual necessária' } : {}),
+    ...formatarCoordenadas(lat, lng),
+  });
+
+  // -------------------
+
   try {
-    // Tentativa 1 — endereço original
-    const resultado1 = await geocodificar(address);
-
-    if (!resultado1) {
-      return res.status(404).json({ error: 'Endereço não encontrado na tentativa 1' });
-    }
-
-    const { lat: lat1, lng: lng1 } = resultado1.geometry.location;
-    const confirmado1 = resultado1.formatted_address;
-    const { score: score1, matchStatus: status1 } = calcularMatch(address, confirmado1);
-
-    // Retorno imediato se ok ou incerto
-    if (status1 !== 'divergente') {
-      return res.status(200).json({
-        tentativa: 1,
-        match_status: status1,
-        match_score: Math.round(score1 * 100) + '%',
-        endereco_solicitado: address,
-        endereco_confirmado: confirmado1,
-        ...formatarCoordenadas(lat1, lng1),
-      });
-    }
-
-    // Tentativa 2 — fallback via ViaCEP se CEP específico
-    if (!cepEspecifico(cep)) {
-      return res.status(200).json({
-        tentativa: 1,
-        match_status: 'divergente',
-        match_score: Math.round(score1 * 100) + '%',
-        endereco_solicitado: address,
-        endereco_confirmado: confirmado1,
-        aviso: 'CEP ausente ou genérico — revisão manual necessária',
-        ...formatarCoordenadas(lat1, lng1),
-      });
-    }
-
-    const cepLimpo = cep.replace('-', '');
-    const viaCepRes = await fetch(`https://viacep.com.br/ws/${cepLimpo}/json/`);
-    const viaCepData = await viaCepRes.json();
-
-    if (viaCepData.erro) {
-      return res.status(200).json({
-        tentativa: 1,
-        match_status: 'divergente',
-        match_score: Math.round(score1 * 100) + '%',
-        endereco_solicitado: address,
-        endereco_confirmado: confirmado1,
-        aviso: 'CEP não encontrado no ViaCEP — revisão manual necessária',
-        ...formatarCoordenadas(lat1, lng1),
-      });
-    }
-
     const numero = extrairNumero(address);
-    const enderecoCorrigido = `${viaCepData.logradouro}, ${numero}, ${cepLimpo}, ${viaCepData.localidade}, ${viaCepData.uf}`;
 
-    const resultado2 = await geocodificar(enderecoCorrigido);
-
-    if (!resultado2) {
-      return res.status(200).json({
-        tentativa: 2,
-        match_status: 'divergente',
-        match_score: '0%',
-        endereco_solicitado: address,
-        endereco_corrigido_viacep: enderecoCorrigido,
-        endereco_confirmado: confirmado1,
-        aviso: 'Tentativa com ViaCEP também falhou — revisão manual necessária',
-        ...formatarCoordenadas(lat1, lng1),
-      });
+    // Tentativa 1 — endereço original completo
+    const resultado1 = await geocodificar(address);
+    if (resultado1) {
+      const { lat, lng } = resultado1.geometry.location;
+      const confirmado = resultado1.formatted_address;
+      const { score, matchStatus } = calcularMatch(address, confirmado);
+      if (matchStatus !== 'divergente') {
+        return res.status(200).json(montarResposta(1, matchStatus, score, address, confirmado, lat, lng));
+      }
     }
 
-    const { lat: lat2, lng: lng2 } = resultado2.geometry.location;
-    const confirmado2 = resultado2.formatted_address;
-    const { score: score2, matchStatus: status2 } = calcularMatch(enderecoCorrigido, confirmado2);
+    // Tentativa 2 — nome de rua do ViaCEP + número + CEP + cidade
+    if (cepEspecifico(cep) && numero) {
+      const cepLimpo = cep.replace('-', '');
+      const viaCepRes = await fetch(`https://viacep.com.br/ws/${cepLimpo}/json/`);
+      const viaCepData = await viaCepRes.json();
 
-    return res.status(200).json({
-      tentativa: 2,
-      match_status: status2,
-      match_score: Math.round(score2 * 100) + '%',
+      if (!viaCepData.erro) {
+        const enderecoCorrigido = `${viaCepData.logradouro}, ${numero}, ${cep}, ${viaCepData.localidade}, ${viaCepData.uf}, Brasil`;
+        const resultado2 = await geocodificar(enderecoCorrigido);
+
+        if (resultado2) {
+          const { lat, lng } = resultado2.geometry.location;
+          const confirmado = resultado2.formatted_address;
+          const { score, matchStatus } = calcularMatch(enderecoCorrigido, confirmado);
+          if (matchStatus !== 'divergente') {
+            return res.status(200).json(
+              montarResposta(2, matchStatus, score, address, confirmado, lat, lng, {
+                endereco_corrigido_viacep: enderecoCorrigido,
+              })
+            );
+          }
+        }
+
+        // Tentativa 3 — só CEP + número, sem nome de rua
+        if (numero) {
+          const enderecoMinimo = `${numero}, ${cep}, Brasil`;
+          const resultado3 = await geocodificar(enderecoMinimo);
+
+          if (resultado3) {
+            const { lat, lng } = resultado3.geometry.location;
+            const confirmado = resultado3.formatted_address;
+            const { score, matchStatus } = calcularMatch(
+              `${viaCepData.logradouro} ${numero} ${viaCepData.localidade}`,
+              confirmado
+            );
+            return res.status(200).json(
+              montarResposta(3, matchStatus, score, address, confirmado, lat, lng, {
+                endereco_corrigido_viacep: enderecoCorrigido,
+                endereco_minimo_usado: enderecoMinimo,
+                ...(matchStatus === 'divergente' ? {} : { aviso: null }),
+              })
+            );
+          }
+        }
+      }
+    }
+
+    // Todas as tentativas falharam
+    return res.status(404).json({
+      error: 'Endereço não encontrado após todas as tentativas',
       endereco_solicitado: address,
-      endereco_corrigido_viacep: enderecoCorrigido,
-      endereco_confirmado: confirmado2,
-      aviso: status2 === 'divergente' ? 'Revisão manual necessária' : null,
-      ...formatarCoordenadas(lat2, lng2),
+      cep_fornecido: cep || null,
+      aviso: 'Revisão manual necessária',
     });
 
   } catch (error) {
