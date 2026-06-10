@@ -11,6 +11,8 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Endereço obrigatório' });
   }
 
+  // --- Utilitários ---
+
   const normalizar = (str) =>
     str
       .toLowerCase()
@@ -32,14 +34,40 @@ export default async function handler(req, res) {
     return { score, matchStatus };
   };
 
-  const geocodificar = async (address, components = null) => {
+  const geocodificar = async (addr, components = null) => {
     let url = `https://maps.googleapis.com/maps/api/geocode/json?region=br&language=pt-BR&key=${process.env.GOOGLE_MAPS_API_KEY}`;
-    if (address) url += `&address=${encodeURIComponent(address)}`;
+    if (addr) url += `&address=${encodeURIComponent(addr)}`;
     if (components) url += `&components=${encodeURIComponent(components)}`;
     const response = await fetch(url);
     const data = await response.json();
     if (data.status !== 'OK') return null;
     return data.results[0];
+  };
+
+  const validarEndereco = async (numero, cepLimpo, logradouroHint = null) => {
+    const addressLines = logradouroHint
+      ? [`${logradouroHint}, ${numero}`]
+      : [numero];
+
+    const payload = {
+      address: {
+        regionCode: 'BR',
+        postalCode: cepLimpo,
+        addressLines,
+      },
+    };
+
+    const response = await fetch(
+      `https://addressvalidation.googleapis.com/v1:validateAddress?key=${process.env.GOOGLE_MAPS_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }
+    );
+    const data = await response.json();
+    if (!data.result) return null;
+    return data.result;
   };
 
   const isResultadoConfiavel = (resultado, numero, cepLimpo) => {
@@ -56,6 +84,16 @@ export default async function handler(req, res) {
       (!cepLimpo || postalCode === cepLimpo) &&
       (!numero || streetNumber === numero)
     );
+  };
+
+  const isValidacaoConfiavel = (result, numero, cepLimpo) => {
+    if (!result) return false;
+    const verdict = result.verdict;
+    const geocode = result.geocode;
+    if (!verdict || !geocode?.location) return false;
+    const granularidade = verdict.validationGranularity;
+    const granularidadesAceitas = ['PREMISE', 'SUB_PREMISE', 'PREMISE_PROXIMITY'];
+    return granularidadesAceitas.includes(granularidade);
   };
 
   const toGMS = (decimal) => {
@@ -90,8 +128,9 @@ export default async function handler(req, res) {
     return match ? match[1] : null;
   };
 
-  const montarResposta = (tentativa, confiavel, matchStatus, score, enderecoSolicitado, enderecoConfirmado, lat, lng, extra = {}) => ({
+  const montarResposta = (tentativa, metodo, confiavel, matchStatus, score, enderecoSolicitado, enderecoConfirmado, lat, lng, extra = {}) => ({
     tentativa,
+    metodo,
     confiavel,
     match_status: matchStatus,
     match_score: Math.round(score * 100) + '%',
@@ -102,39 +141,61 @@ export default async function handler(req, res) {
     ...formatarCoordenadas(lat, lng),
   });
 
+  // -------------------
+
   try {
     const numero = extrairNumero(address);
     const cepLimpo = cep ? cep.replace(/\D/g, '') : null;
 
-    // Tentativa 1 — endereço original completo
+    // Tentativa 1 — Geocoding API com endereço original
     const resultado1 = await geocodificar(address);
     if (resultado1 && isResultadoConfiavel(resultado1, numero, cepLimpo)) {
       const { lat, lng } = resultado1.geometry.location;
       const confirmado = resultado1.formatted_address;
       const { score, matchStatus } = calcularMatch(address, confirmado);
       return res.status(200).json(
-        montarResposta(1, true, matchStatus, score, address, confirmado, lat, lng)
+        montarResposta(1, 'geocoding-original', true, matchStatus, score, address, confirmado, lat, lng)
       );
     }
 
-    // Tentativa 2 — número + components=postal_code|country (sem nome de rua)
+    // Tentativa 2 — Address Validation API com CEP + número
     if (cepEspecifico(cep) && numero) {
-      const components = `postal_code:${cepLimpo}|country:BR`;
-      const resultado2 = await geocodificar(numero, components);
-      if (resultado2) {
-        const { lat, lng } = resultado2.geometry.location;
-        const confirmado = resultado2.formatted_address;
+      // Tenta primeiro sem hint de logradouro
+      let validacao = await validarEndereco(numero, cepLimpo);
+
+      // Se não for confiável, tenta com hint do ViaCEP
+      if (!isValidacaoConfiavel(validacao, numero, cepLimpo)) {
+        const viaCepRes = await fetch(`https://viacep.com.br/ws/${cepLimpo}/json/`);
+        const viaCepData = await viaCepRes.json();
+        if (!viaCepData.erro && viaCepData.logradouro) {
+          validacao = await validarEndereco(numero, cepLimpo, viaCepData.logradouro);
+        }
+      }
+
+      if (validacao && isValidacaoConfiavel(validacao, numero, cepLimpo)) {
+        const { latitude: lat, longitude: lng } = validacao.geocode.location;
+        const confirmado = validacao.address.formattedAddress;
         const { score, matchStatus } = calcularMatch(address, confirmado);
-        const confiavel = isResultadoConfiavel(resultado2, numero, cepLimpo);
         return res.status(200).json(
-          montarResposta(2, confiavel, matchStatus, score, address, confirmado, lat, lng, {
-            metodo: 'CEP + número via components filter',
+          montarResposta(2, 'address-validation-api', true, matchStatus, score, address, confirmado, lat, lng, {
+            granularidade: validacao.verdict.validationGranularity,
           })
         );
       }
     }
 
-    // Todas as tentativas falharam
+    // Tentativa 3 — Retorna melhor resultado disponível com flag de revisão
+    const melhorResultado = resultado1;
+    if (melhorResultado) {
+      const { lat, lng } = melhorResultado.geometry.location;
+      const confirmado = melhorResultado.formatted_address;
+      const { score, matchStatus } = calcularMatch(address, confirmado);
+      return res.status(200).json(
+        montarResposta(3, 'melhor-resultado-disponivel', false, matchStatus, score, address, confirmado, lat, lng)
+      );
+    }
+
+    // Nada encontrado
     return res.status(404).json({
       error: 'Endereço não encontrado após todas as tentativas',
       endereco_solicitado: address,
