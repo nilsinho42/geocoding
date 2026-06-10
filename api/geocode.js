@@ -11,8 +11,6 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Endereço obrigatório' });
   }
 
-  // --- Utilitários ---
-
   const normalizar = (str) =>
     str
       .toLowerCase()
@@ -104,8 +102,6 @@ export default async function handler(req, res) {
     ...formatarCoordenadas(lat, lng),
   });
 
-  // -------------------
-
   try {
     const numero = extrairNumero(address);
     const cepLimpo = cep ? cep.replace(/\D/g, '') : null;
@@ -117,9 +113,21 @@ export default async function handler(req, res) {
       const confirmado = resultado1.formatted_address;
       const { score, matchStatus } = calcularMatch(address, confirmado);
       const confiavel = isResultadoConfiavel(resultado1, numero, cepLimpo);
-      if (confiavel) {
-        return res.status(200).json(montarResposta(1, true, matchStatus, score, address, confirmado, lat, lng));
-      }
+
+      // DEBUG TEMPORÁRIO
+      return res.status(200).json({
+        debug: {
+          confirmado,
+          locationType: resultado1.geometry?.location_type,
+          partialMatch: resultado1.partial_match,
+          addressComponents: resultado1.address_components,
+          confiavel,
+          matchStatus,
+          score,
+          numero,
+          cepLimpo,
+        }
+      });
     }
 
     // Tentativa 2 — número + components=postal_code|country (sem nome de rua)
