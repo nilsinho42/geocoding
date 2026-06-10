@@ -101,7 +101,13 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify(payload),
     });
-    results.places_text_search_new = await r.json();
+
+    const rawText = await r.text();
+    results.places_text_search_new = {
+      http_status: r.status,
+      raw_response: rawText,
+      parsed: (() => { try { return JSON.parse(rawText); } catch { return null; } })(),
+    };
   } catch (e) {
     results.places_text_search_new = { error: e.message };
   }
