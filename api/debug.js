@@ -80,19 +80,31 @@ export default async function handler(req, res) {
       results.address_validation_with_viacep_hint = { error: e.message };
     }
   }
-// 6 — Google Places Text Search
-try {
-    const query = encodeURIComponent(
-    results.viacep?.logradouro
-        ? `${results.viacep.logradouro}, ${numero}, ${results.viacep.localidade}, ${results.viacep.uf}`
-        : `${cep} ${numero} Brasil`
-    );
-    const url = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${query}&region=br&language=pt-BR&key=${process.env.GOOGLE_MAPS_API_KEY}`;
-    const r = await fetch(url);
-    results.places_text_search = await r.json();
-} catch (e) {
-    results.places_text_search = { error: e.message };
-}
+// 6 — Google Places Text Search (New)
+  try {
+    const queryText = results.viacep?.logradouro
+      ? `${results.viacep.logradouro}, ${numero}, ${results.viacep.localidade}, ${results.viacep.uf}, Brasil`
+      : `${cep} ${numero} Brasil`;
+
+    const payload = {
+      textQuery: queryText,
+      languageCode: 'pt-BR',
+      regionCode: 'BR',
+    };
+
+    const r = await fetch('https://places.googleapis.com/v1/places:searchText', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': process.env.GOOGLE_MAPS_API_KEY,
+        'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.addressComponents',
+      },
+      body: JSON.stringify(payload),
+    });
+    results.places_text_search_new = await r.json();
+  } catch (e) {
+    results.places_text_search_new = { error: e.message };
+  }
 
   return res.status(200).json(results);
 }
