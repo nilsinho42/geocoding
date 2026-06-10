@@ -108,26 +108,13 @@ export default async function handler(req, res) {
 
     // Tentativa 1 — endereço original completo
     const resultado1 = await geocodificar(address);
-    if (resultado1) {
+    if (resultado1 && isResultadoConfiavel(resultado1, numero, cepLimpo)) {
       const { lat, lng } = resultado1.geometry.location;
       const confirmado = resultado1.formatted_address;
       const { score, matchStatus } = calcularMatch(address, confirmado);
-      const confiavel = isResultadoConfiavel(resultado1, numero, cepLimpo);
-
-      // DEBUG TEMPORÁRIO
-      return res.status(200).json({
-        debug: {
-          confirmado,
-          locationType: resultado1.geometry?.location_type,
-          partialMatch: resultado1.partial_match,
-          addressComponents: resultado1.address_components,
-          confiavel,
-          matchStatus,
-          score,
-          numero,
-          cepLimpo,
-        }
-      });
+      return res.status(200).json(
+        montarResposta(1, true, matchStatus, score, address, confirmado, lat, lng)
+      );
     }
 
     // Tentativa 2 — número + components=postal_code|country (sem nome de rua)
