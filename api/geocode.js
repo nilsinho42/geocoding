@@ -34,12 +34,30 @@ export default async function handler(req, res) {
     return { score, matchStatus };
   };
 
-  const geocodificar = async (query) => {
-    const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&region=br&language=pt-BR&key=${process.env.GOOGLE_MAPS_API_KEY}`;
+  const geocodificar = async (address, components = null) => {
+    let url = `https://maps.googleapis.com/maps/api/geocode/json?region=br&language=pt-BR&key=${process.env.GOOGLE_MAPS_API_KEY}`;
+    if (address) url += `&address=${encodeURIComponent(address)}`;
+    if (components) url += `&components=${encodeURIComponent(components)}`;
     const response = await fetch(url);
     const data = await response.json();
     if (data.status !== 'OK') return null;
     return data.results[0];
+  };
+
+  const isResultadoConfiavel = (resultado, numero, cepLimpo) => {
+    if (!resultado) return false;
+    const getComponent = (types) =>
+      resultado.address_components?.find(c => types.every(t => c.types.includes(t)));
+    const postalCode = getComponent(['postal_code'])?.long_name?.replace(/\D/g, '');
+    const streetNumber = getComponent(['street_number'])?.long_name;
+    const locationType = resultado.geometry?.location_type;
+    const partialMatch = resultado.partial_match;
+    return (
+      !partialMatch &&
+      ['ROOFTOP', 'RANGE_INTERPOLATED'].includes(locationType) &&
+      (!cepLimpo || postalCode === cepLimpo) &&
+      (!numero || streetNumber === numero)
+    );
   };
 
   const toGMS = (decimal) => {
@@ -67,21 +85,22 @@ export default async function handler(req, res) {
     };
   };
 
-  const cepEspecifico = (c) => c && c.replace('-', '').slice(-3) !== '000';
+  const cepEspecifico = (c) => c && c.replace(/\D/g, '').slice(-3) !== '000';
 
   const extrairNumero = (addr) => {
     const match = addr.match(/\b(\d{1,5})\b/);
     return match ? match[1] : null;
   };
 
-  const montarResposta = (tentativa, matchStatus, score, enderecoSolicitado, enderecoConfirmado, lat, lng, extra = {}) => ({
+  const montarResposta = (tentativa, confiavel, matchStatus, score, enderecoSolicitado, enderecoConfirmado, lat, lng, extra = {}) => ({
     tentativa,
+    confiavel,
     match_status: matchStatus,
     match_score: Math.round(score * 100) + '%',
     endereco_solicitado: enderecoSolicitado,
     endereco_confirmado: enderecoConfirmado,
     ...extra,
-    ...(matchStatus === 'divergente' ? { aviso: 'Revisão manual necessária' } : {}),
+    ...(!confiavel ? { aviso: 'Revisão manual necessária' } : {}),
     ...formatarCoordenadas(lat, lng),
   });
 
@@ -89,6 +108,7 @@ export default async function handler(req, res) {
 
   try {
     const numero = extrairNumero(address);
+    const cepLimpo = cep ? cep.replace(/\D/g, '') : null;
 
     // Tentativa 1 — endereço original completo
     const resultado1 = await geocodificar(address);
@@ -96,55 +116,26 @@ export default async function handler(req, res) {
       const { lat, lng } = resultado1.geometry.location;
       const confirmado = resultado1.formatted_address;
       const { score, matchStatus } = calcularMatch(address, confirmado);
-      if (matchStatus !== 'divergente') {
-        return res.status(200).json(montarResposta(1, matchStatus, score, address, confirmado, lat, lng));
+      const confiavel = isResultadoConfiavel(resultado1, numero, cepLimpo);
+      if (confiavel) {
+        return res.status(200).json(montarResposta(1, true, matchStatus, score, address, confirmado, lat, lng));
       }
     }
 
-    // Tentativa 2 — nome de rua do ViaCEP + número + CEP + cidade
+    // Tentativa 2 — número + components=postal_code|country (sem nome de rua)
     if (cepEspecifico(cep) && numero) {
-      const cepLimpo = cep.replace('-', '');
-      const viaCepRes = await fetch(`https://viacep.com.br/ws/${cepLimpo}/json/`);
-      const viaCepData = await viaCepRes.json();
-
-      if (!viaCepData.erro) {
-        const enderecoCorrigido = `${viaCepData.logradouro}, ${numero}, ${cep}, ${viaCepData.localidade}, ${viaCepData.uf}, Brasil`;
-        const resultado2 = await geocodificar(enderecoCorrigido);
-
-        if (resultado2) {
-          const { lat, lng } = resultado2.geometry.location;
-          const confirmado = resultado2.formatted_address;
-          const { score, matchStatus } = calcularMatch(enderecoCorrigido, confirmado);
-          if (matchStatus !== 'divergente') {
-            return res.status(200).json(
-              montarResposta(2, matchStatus, score, address, confirmado, lat, lng, {
-                endereco_corrigido_viacep: enderecoCorrigido,
-              })
-            );
-          }
-        }
-
-        // Tentativa 3 — só CEP + número, sem nome de rua
-        if (numero) {
-          const enderecoMinimo = `${numero}, ${cep}, Brasil`;
-          const resultado3 = await geocodificar(enderecoMinimo);
-
-          if (resultado3) {
-            const { lat, lng } = resultado3.geometry.location;
-            const confirmado = resultado3.formatted_address;
-            const { score, matchStatus } = calcularMatch(
-              `${viaCepData.logradouro} ${numero} ${viaCepData.localidade}`,
-              confirmado
-            );
-            return res.status(200).json(
-              montarResposta(3, matchStatus, score, address, confirmado, lat, lng, {
-                endereco_corrigido_viacep: enderecoCorrigido,
-                endereco_minimo_usado: enderecoMinimo,
-                ...(matchStatus === 'divergente' ? {} : { aviso: null }),
-              })
-            );
-          }
-        }
+      const components = `postal_code:${cepLimpo}|country:BR`;
+      const resultado2 = await geocodificar(numero, components);
+      if (resultado2) {
+        const { lat, lng } = resultado2.geometry.location;
+        const confirmado = resultado2.formatted_address;
+        const { score, matchStatus } = calcularMatch(address, confirmado);
+        const confiavel = isResultadoConfiavel(resultado2, numero, cepLimpo);
+        return res.status(200).json(
+          montarResposta(2, confiavel, matchStatus, score, address, confirmado, lat, lng, {
+            metodo: 'CEP + número via components filter',
+          })
+        );
       }
     }
 
