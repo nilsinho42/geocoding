@@ -112,5 +112,46 @@ export default async function handler(req, res) {
     results.places_text_search_new = { error: e.message };
   }
 
+// 7 — Google dois passos: rua sem número → extrai nome → geocodifica com número
+  try {
+    const ruaSemNumero = results.viacep?.logradouro
+      ? `${results.viacep.logradouro}, ${results.viacep.localidade}, ${results.viacep.uf}, Brasil`
+      : null;
+
+    if (ruaSemNumero && numero) {
+      const url1 = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(ruaSemNumero)}&region=br&language=pt-BR&key=${process.env.GOOGLE_MAPS_API_KEY}`;
+      const r1 = await fetch(url1);
+      const data1 = await r1.json();
+
+      results.two_step_passo1 = {
+        query: ruaSemNumero,
+        status: data1.status,
+        formatted: data1.results?.[0]?.formatted_address,
+        location_type: data1.results?.[0]?.geometry?.location_type,
+        route_component: data1.results?.[0]?.address_components?.find(c => c.types.includes('route'))?.long_name,
+      };
+
+      const ruaGoogle = data1.results?.[0]?.address_components?.find(c => c.types.includes('route'))?.long_name;
+
+      if (ruaGoogle) {
+        const enderecoFinal = `${ruaGoogle}, ${numero}, ${results.viacep.localidade}, ${results.viacep.uf}, Brasil`;
+        const url2 = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(enderecoFinal)}&region=br&language=pt-BR&key=${process.env.GOOGLE_MAPS_API_KEY}`;
+        const r2 = await fetch(url2);
+        const data2 = await r2.json();
+
+        results.two_step_passo2 = {
+          query: enderecoFinal,
+          status: data2.status,
+          formatted: data2.results?.[0]?.formatted_address,
+          location_type: data2.results?.[0]?.geometry?.location_type,
+          partial_match: data2.results?.[0]?.partial_match,
+          location: data2.results?.[0]?.geometry?.location,
+        };
+      }
+    }
+  } catch (e) {
+    results.two_step = { error: e.message };
+  }
+
   return res.status(200).json(results);
 }
