@@ -152,6 +152,91 @@ export default async function handler(req, res) {
   } catch (e) {
     results.two_step = { error: e.message };
   }
+  
+// 8 — Variações de grafia da última palavra da rua
+  try {
+    const gerarVariacoes = (palavra) => {
+      const variações = new Set();
+      const base = palavra.toLowerCase();
 
+      // Troca vogal final
+      const trocaVogalFinal = (str) => {
+        const vogais = ['a', 'e', 'i', 'o'];
+        const chars = str.split('');
+        for (let i = chars.length - 1; i >= 0; i--) {
+          if (vogais.includes(chars[i])) {
+            for (const v of vogais) {
+              if (v !== chars[i]) {
+                const nova = [...chars];
+                nova[i] = v;
+                variações.add(nova.join(''));
+              }
+            }
+            break;
+          }
+        }
+      };
+
+      // Troca z↔s em qualquer posição
+      const trocaZS = (str) => {
+        if (str.includes('z')) variações.add(str.replaceAll('z', 's'));
+        if (str.includes('s')) variações.add(str.replaceAll('s', 'z'));
+      };
+
+      trocaVogalFinal(base);
+      trocaZS(base);
+
+      // Combinações: troca z↔s + troca vogal final
+      const comZS = base.includes('z')
+        ? base.replaceAll('z', 's')
+        : base.replaceAll('s', 'z');
+      trocaVogalFinal(comZS);
+
+      // Remove a palavra original
+      variações.delete(base);
+      return [...variações].slice(0, 10);
+    };
+
+    if (results.viacep?.logradouro && numero) {
+      const palavras = results.viacep.logradouro.split(' ');
+      const ultimaPalavra = palavras[palavras.length - 1];
+      const prefixo = palavras.slice(0, -1).join(' ');
+      const variações = gerarVariacoes(ultimaPalavra);
+
+      results.variações_testadas = [];
+
+      for (const variação of variações) {
+        const enderecoVariação = `${prefixo} ${variação}, ${numero}, ${results.viacep.localidade}, ${results.viacep.uf}, Brasil`;
+        const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(enderecoVariação)}&region=br&language=pt-BR&key=${process.env.GOOGLE_MAPS_API_KEY}`;
+        const r = await fetch(url);
+        const data = await r.json();
+        const resultado = data.results?.[0];
+
+        const entry = {
+          variação,
+          query: enderecoVariação,
+          status: data.status,
+          formatted: resultado?.formatted_address || null,
+          location_type: resultado?.geometry?.location_type || null,
+          partial_match: resultado?.partial_match || null,
+          location: resultado?.geometry?.location || null,
+        };
+
+        results.variações_testadas.push(entry);
+
+        // Para no primeiro resultado confiável
+        if (
+          resultado &&
+          !resultado.partial_match &&
+          ['ROOFTOP', 'RANGE_INTERPOLATED'].includes(resultado.geometry?.location_type)
+        ) {
+          results.variação_encontrada = entry;
+          break;
+        }
+      }
+    }
+  } catch (e) {
+    results.variacoes = { error: e.message };
+  }
   return res.status(200).json(results);
 }
