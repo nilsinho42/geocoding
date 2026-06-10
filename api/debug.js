@@ -80,6 +80,19 @@ export default async function handler(req, res) {
       results.address_validation_with_viacep_hint = { error: e.message };
     }
   }
+// 6 — Google Places Text Search
+try {
+    const query = encodeURIComponent(
+    results.viacep?.logradouro
+        ? `${results.viacep.logradouro}, ${numero}, ${results.viacep.localidade}, ${results.viacep.uf}`
+        : `${cep} ${numero} Brasil`
+    );
+    const url = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${query}&region=br&language=pt-BR&key=${process.env.GOOGLE_MAPS_API_KEY}`;
+    const r = await fetch(url);
+    results.places_text_search = await r.json();
+} catch (e) {
+    results.places_text_search = { error: e.message };
+}
 
   return res.status(200).json(results);
 }
